@@ -7,7 +7,7 @@
 #>
 
 param(
-    [string]$RepoRoot = ".",
+    [string]$RepoRoot = "\\192.168.16.3\brasilsuperatacado\sysinfo",
     [ValidateSet("Completo", "Minimo")]
     [string]$ModoColeta = "Completo",
     [int]$IntervaloExecucao = 0,
@@ -226,6 +226,7 @@ function Ensure-DisplayHelper {
 
     $displayHelperCode = @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class DisplayHelper
@@ -235,6 +236,7 @@ public static class DisplayHelper
     {
         private const int CCHDEVICENAME = 32;
         private const int CCHFORMNAME = 32;
+
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHDEVICENAME)]
         public string dmDeviceName;
         public ushort dmSpecVersion;
@@ -242,23 +244,28 @@ public static class DisplayHelper
         public ushort dmSize;
         public ushort dmDriverExtra;
         public uint dmFields;
+
         public int dmPositionX;
         public int dmPositionY;
         public uint dmDisplayOrientation;
         public uint dmDisplayFixedOutput;
+
         public short dmColor;
         public short dmDuplex;
         public short dmYResolution;
         public short dmTTOption;
         public short dmCollate;
+
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCHFORMNAME)]
         public string dmFormName;
+
         public ushort dmLogPixels;
         public uint dmBitsPerPel;
         public uint dmPelsWidth;
         public uint dmPelsHeight;
         public uint dmDisplayFlags;
         public uint dmDisplayFrequency;
+
         public uint dmICMMethod;
         public uint dmICMIntent;
         public uint dmMediaType;
@@ -269,19 +276,131 @@ public static class DisplayHelper
         public uint dmPanningHeight;
     }
 
+    [Flags]
+    public enum DisplayDeviceStateFlags : int
+    {
+        AttachedToDesktop = 0x1,
+        MultiDriver = 0x2,
+        PrimaryDevice = 0x4,
+        MirroringDriver = 0x8,
+        VGACompatible = 0x10,
+        Removable = 0x20,
+        ModesPruned = 0x8000000,
+        Remote = 0x4000000,
+        Disconnect = 0x2000000
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct DISPLAY_DEVICE
+    {
+        public int cb;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DeviceName;     // \\.\DISPLAY1
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceString;
+
+        public DisplayDeviceStateFlags StateFlags;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceID;       // Ex: PCI\VEN_...
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceKey;
+    }
+
+    public class DisplayPath
+    {
+        public string DisplayName;    // \\.\DISPLAY1
+        public string DisplayString;
+        public string DisplayId;      // PCI\...
+
+        public bool Attached;
+        public bool Primary;
+
+        public string MonitorId;      // MONITOR\XXXX\...
+        public string MonitorString;
+
+        public int Width;
+        public int Height;
+        public int RefreshRate;
+        public int BitsPerPel;
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern bool EnumDisplaySettings(
-        string deviceName, int modeNum, ref DEVMODE devMode);
+    public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern bool EnumDisplayDevices(string lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+
+    public static DisplayPath[] GetActiveDisplayPaths()
+    {
+        var list = new List<DisplayPath>();
+
+        for (uint i = 0; i < 128; i++)
+        {
+            DISPLAY_DEVICE dd = new DISPLAY_DEVICE();
+            dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+
+            if (!EnumDisplayDevices(null, i, ref dd, 0))
+                break;
+
+            bool attached = (dd.StateFlags & DisplayDeviceStateFlags.AttachedToDesktop) != 0;
+            bool mirroring = (dd.StateFlags & DisplayDeviceStateFlags.MirroringDriver) != 0;
+
+            if (!attached || mirroring)
+                continue;
+
+            var dm = new DEVMODE();
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+
+            int width = 0, height = 0, freq = 0, bpp = 0;
+
+            if (EnumDisplaySettings(dd.DeviceName, -1, ref dm))
+            {
+                width = (int)dm.dmPelsWidth;
+                height = (int)dm.dmPelsHeight;
+                freq = (int)dm.dmDisplayFrequency;
+                bpp = (int)dm.dmBitsPerPel;
+            }
+
+            // Monitor ligado ao DISPLAYx (quando disponível)
+            DISPLAY_DEVICE md = new DISPLAY_DEVICE();
+            md.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+
+            string monId = null, monStr = null;
+            if (EnumDisplayDevices(dd.DeviceName, 0, ref md, 0))
+            {
+                monId = md.DeviceID;
+                monStr = md.DeviceString;
+            }
+
+            list.Add(new DisplayPath
+            {
+                DisplayName = dd.DeviceName,
+                DisplayString = dd.DeviceString,
+                DisplayId = dd.DeviceID,
+                Attached = attached,
+                Primary = (dd.StateFlags & DisplayDeviceStateFlags.PrimaryDevice) != 0,
+                MonitorId = monId,
+                MonitorString = monStr,
+                Width = width,
+                Height = height,
+                RefreshRate = freq,
+                BitsPerPel = bpp
+            });
+        }
+
+        return list.ToArray();
+    }
 
     public static int GetCurrentRefreshRate(string deviceName)
     {
         DEVMODE dm = new DEVMODE();
         dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
-        // -1 = ENUM_CURRENT_SETTINGS
         if (EnumDisplaySettings(deviceName, -1, ref dm))
-        {
             return (int)dm.dmDisplayFrequency;
-        }
         return 0;
     }
 
@@ -289,6 +408,7 @@ public static class DisplayHelper
     {
         DEVMODE dm = new DEVMODE();
         dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+
         int modeNum = 0;
         int maxFreq = 0;
 
@@ -296,13 +416,12 @@ public static class DisplayHelper
         {
             if (dm.dmPelsWidth == (uint)width && dm.dmPelsHeight == (uint)height)
             {
-                if (dm.dmDisplayFrequency > maxFreq)
-                {
+                if ((int)dm.dmDisplayFrequency > maxFreq)
                     maxFreq = (int)dm.dmDisplayFrequency;
-                }
             }
             modeNum++;
         }
+
         return maxFreq;
     }
 }
@@ -1016,87 +1135,186 @@ function Get-SystemInventory {
         Write-Log "Erro ao coletar informações de monitores (EDID): $($_.Exception.Message)" "WARNING"
     }
 
-    # Tenta obter resolução e primário via System.Windows.Forms.Screen
-    try {
-        [void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-        if ([System.Windows.Forms.Screen] -as [type]) {
-            $screensDotNet = [System.Windows.Forms.Screen]::AllScreens
-            $screenInfo = @(
-                for ($i = 0; $i -lt $screensDotNet.Count; $i++) {
-                    [pscustomobject]@{
-                        Index      = $i
-                        Primary    = $screensDotNet[$i].Primary
-                        WidthPx    = $screensDotNet[$i].Bounds.Width
-                        HeightPx   = $screensDotNet[$i].Bounds.Height
-                        DeviceName = $screensDotNet[$i].DeviceName   # Ex: \\.\DISPLAY1
-                        Resolution = ('{0}x{1}' -f $screensDotNet[$i].Bounds.Width, $screensDotNet[$i].Bounds.Height)
-                    }
-                }
-            )
+# --- Displays (resolução/Hz reais por \\.\DISPLAYx) + correlação com EDID ---
+$screenInfo   = @()
+$displayPaths = @()
+$displayMap   = @()
+
+function Get-PnpCodeFromInstanceName([string]$InstanceName) {
+    if ([string]::IsNullOrWhiteSpace($InstanceName)) { return $null }
+    $m = [regex]::Match($InstanceName, '(?i)DISPLAY\\([^\\]+)\\')
+    if ($m.Success) { return $m.Groups[1].Value.ToUpperInvariant() }
+    return $null
+}
+
+function Get-PnpCodeFromDeviceId([string]$DeviceId) {
+    if ([string]::IsNullOrWhiteSpace($DeviceId)) { return $null }
+    $m = [regex]::Match($DeviceId, '(?i)(MONITOR|DISPLAY)\\([^\\]+)\\')
+    if ($m.Success) { return $m.Groups[2].Value.ToUpperInvariant() }
+    return $null
+}
+
+# 1) Preferência: Win32 EnumDisplayDevices/EnumDisplaySettings (sem WinForms/DPI)
+try {
+    Ensure-DisplayHelper
+    $displayPaths = @([DisplayHelper]::GetActiveDisplayPaths())
+}
+catch {
+    $displayPaths = @()
+}
+
+# 2) Fallback (especialmente em sessão não interativa): registry GraphicsDrivers\Configuration
+#    Observação: esse fallback é bom para RESOLUÇÃO; refresh rate pode não estar disponível.
+function Get-DisplayConfigFromRegistry {
+    $out = @()
+    $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration'
+    $cfgs = Get-ChildItem -Path $base -ErrorAction SilentlyContinue
+    foreach ($cfg in $cfgs) {
+        $p00   = Join-Path $cfg.PSPath '00'
+        $p0000 = Join-Path $p00 '00'
+
+        $v00   = Get-ItemProperty -Path $p00   -ErrorAction SilentlyContinue
+        $v0000 = Get-ItemProperty -Path $p0000 -ErrorAction SilentlyContinue
+
+        $w = $null; $h = $null
+        if ($v0000) {
+            if ($v0000.PSObject.Properties.Name -contains 'ActiveSize.cx') { $w = $v0000.'ActiveSize.cx' }
+            if ($v0000.PSObject.Properties.Name -contains 'ActiveSize.cy') { $h = $v0000.'ActiveSize.cy' }
         }
-        else {
-            $screenInfo = @()
+        if (($null -eq $w -or $null -eq $h) -and $v00) {
+            if ($v00.PSObject.Properties.Name -contains 'PrimSurfSize.cx') { $w = $v00.'PrimSurfSize.cx' }
+            if ($v00.PSObject.Properties.Name -contains 'PrimSurfSize.cy') { $h = $v00.'PrimSurfSize.cy' }
         }
-    }
-    catch {
-        $screenInfo = @()
-    }
 
-    # Usa DisplayHelper (Win32 API) para obter Hz por tela
-    if ($screenInfo.Count -gt 0) {
-        Ensure-DisplayHelper
-    }
+        if ($w -and $h -and $w -gt 0 -and $h -gt 0) {
+            # Heurística: tenta extrair o “código PNP” do nome da chave (ex: ..._DELA0B8_...)
+            $pnp = $null
+            $m = [regex]::Match($cfg.PSChildName, '_(?<pnp>[A-Z0-9]{3,})_')
+            if ($m.Success) { $pnp = $m.Groups['pnp'].Value.ToUpperInvariant() }
 
-    if ($monitors.Count -gt 0) {
-        for ($i = 0; $i -lt $monitors.Count; $i++) {
-            $mon = $monitors[$i]
-            $scr = if ($screenInfo.Count -gt $i) { $screenInfo[$i] } else { $null }
-
-            if ($scr) {
-                $mon.WidthPx = $scr.WidthPx
-                $mon.HeightPx = $scr.HeightPx
-                $mon.Resolution = $scr.Resolution
-                $mon.Primary = $scr.Primary
-
-                # Hz atuais para essa tela
-                try {
-                    $hz = [DisplayHelper]::GetCurrentRefreshRate($scr.DeviceName)
-                }
-                catch {
-                    $hz = 0
-                }
-                if ($hz -gt 0) {
-                    $mon.CurrentHz = $hz
-                }
-
-                # Hz máximos (para essa resolução)
-                try {
-                    $maxHz = [DisplayHelper]::GetMaxRefreshRate($scr.DeviceName, $scr.WidthPx, $scr.HeightPx)
-                }
-                catch {
-                    $maxHz = 0
-                }
-                if ($maxHz -gt 0) {
-                    $mon.MaxHz = $maxHz
-                }
-            }
-            elseif ($gpuResolutionStr) {
-                # fallback caso não tenha Screen mapeada
-                $parts = $gpuResolutionStr -split 'x'
-                if ($parts.Count -eq 2) {
-                    $mon.WidthPx = [int]$parts[0]
-                    $mon.HeightPx = [int]$parts[1]
-                    $mon.Resolution = $gpuResolutionStr
-                }
+            $out += [pscustomobject]@{
+                PnpCode  = $pnp
+                WidthPx  = [int]$w
+                HeightPx = [int]$h
             }
         }
+    }
+    return $out
+}
 
-        # Se ainda assim ninguém estiver marcado como primário, força o primeiro
-        if (-not ($monitors | Where-Object { $_.Primary } | Select-Object -First 1)) {
-            $monitors[0].Primary = $true
+$hasGoodWin32 = $false
+if ($displayPaths -and $displayPaths.Count -gt 0) {
+    $hasGoodWin32 = @($displayPaths | Where-Object { $_.Width -gt 0 -and $_.Height -gt 0 }).Count -gt 0
+}
+
+if (-not $hasGoodWin32) {
+    $regCfg = Get-DisplayConfigFromRegistry
+    if ($regCfg -and $regCfg.Count -gt 0) {
+        # Monta um "displayMap" mínimo (sem DeviceName/Hz), só para preencher resolução corretamente
+        foreach ($rc in $regCfg) {
+            $displayMap += [pscustomobject]@{
+                DeviceName = $null
+                Primary    = $false
+                WidthPx    = $rc.WidthPx
+                HeightPx   = $rc.HeightPx
+                CurrentHz  = $null
+                MaxHz      = $null
+                PnpCode    = $rc.PnpCode
+                Used       = $false
+            }
+        }
+    }
+}
+else {
+    foreach ($d in $displayPaths) {
+        $pnp = Get-PnpCodeFromDeviceId $d.MonitorId
+        if (-not $pnp) { $pnp = Get-PnpCodeFromDeviceId $d.DisplayId }
+
+        $curHz = $null
+        if ([int]$d.RefreshRate -gt 0) { $curHz = [int]$d.RefreshRate }
+        elseif ($d.DisplayName) {
+            $tmp = 0
+            try { $tmp = [DisplayHelper]::GetCurrentRefreshRate($d.DisplayName) } catch { $tmp = 0 }
+            if ($tmp -gt 0) { $curHz = [int]$tmp }
+        }
+
+        $maxHz = $null
+        if ($d.DisplayName -and $d.Width -gt 0 -and $d.Height -gt 0) {
+            $tmp2 = 0
+            try { $tmp2 = [DisplayHelper]::GetMaxRefreshRate($d.DisplayName, [int]$d.Width, [int]$d.Height) } catch { $tmp2 = 0 }
+            if ($tmp2 -gt 0) { $maxHz = [int]$tmp2 }
+        }
+
+        $displayMap += [pscustomobject]@{
+            DeviceName = $d.DisplayName
+            Primary    = [bool]$d.Primary
+            WidthPx    = [int]$d.Width
+            HeightPx   = [int]$d.Height
+            CurrentHz  = $curHz
+            MaxHz      = $maxHz
+            PnpCode    = $pnp
+            Used       = $false
+        }
+    }
+}
+
+# Mantém compatibilidade do JSON: "WinFormsScreens" passa a refletir DISPLAYx reais
+if ($displayMap -and $displayMap.Count -gt 0) {
+    for ($i = 0; $i -lt $displayMap.Count; $i++) {
+        $dm = $displayMap[$i]
+        $screenInfo += [pscustomobject]@{
+            Index      = $i
+            Primary    = $dm.Primary
+            WidthPx    = $dm.WidthPx
+            HeightPx   = $dm.HeightPx
+            DeviceName = $dm.DeviceName
+            Resolution = if ($dm.WidthPx -gt 0 -and $dm.HeightPx -gt 0) { '{0}x{1}' -f $dm.WidthPx, $dm.HeightPx } else { $null }
+        }
+    }
+}
+
+# Correlaciona EDID (WmiMonitorID.InstanceName) com DISPLAYx (MonitorId/DeviceId) por PnPCode
+if ($monitors.Count -gt 0 -and $displayMap.Count -gt 0) {
+    foreach ($mon in $monitors) {
+        $monPnp = Get-PnpCodeFromInstanceName $mon.InstanceName
+
+        $match = $null
+        if ($monPnp) {
+            $match = $displayMap | Where-Object { -not $_.Used -and $_.PnpCode -and $_.PnpCode -eq $monPnp } | Select-Object -First 1
+        }
+        if (-not $match) {
+            $match = $displayMap | Where-Object { -not $_.Used } | Select-Object -First 1
+        }
+
+        if ($match) {
+            $match.Used = $true
+
+            $mon.WidthPx    = $match.WidthPx
+            $mon.HeightPx   = $match.HeightPx
+            $mon.Resolution = if ($match.WidthPx -gt 0 -and $match.HeightPx -gt 0) { '{0}x{1}' -f $match.WidthPx, $match.HeightPx } else { $null }
+            $mon.Primary    = [bool]$match.Primary
+
+            if ($match.CurrentHz) { $mon.CurrentHz = [int]$match.CurrentHz }
+            if ($match.MaxHz)     { $mon.MaxHz     = [int]$match.MaxHz }
         }
     }
 
+    # Se ninguém ficou como primário, força (para não quebrar dashboards)
+    if (-not ($monitors | Where-Object { $_.Primary } | Select-Object -First 1)) {
+        $monitors[0].Primary = $true
+    }
+}
+
+# Ajusta GPU.Resolution/Hz para refletir a tela primária real quando disponível
+try {
+    $p = $displayMap | Where-Object { $_.Primary -and $_.WidthPx -gt 0 -and $_.HeightPx -gt 0 } | Select-Object -First 1
+    if ($p) {
+        $gpuResolutionStr = '{0}x{1}' -f $p.WidthPx, $p.HeightPx
+        if ($p.CurrentHz) { $gpuCurrentHz = [int]$p.CurrentHz }
+        if ($p.MaxHz)     { $gpuMaxHz     = [int]$p.MaxHz }
+    }
+}
+catch { }
 
     # Rede
     $netCfg = Try-Get { Get-NetIPConfiguration } "Falha ao coletar configuração de rede"
