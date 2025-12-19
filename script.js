@@ -486,32 +486,75 @@ function createDetailsContent(machine) {
               </div>
                 <div class="detail-section">
                   <h4><i class="fas fa-tv"></i> Monitores</h4>
-                  ${(machine.Monitor?.Monitors?.length > 0) ? machine.Monitor.Monitors.map(mon => `
+                  ${(() => {
+                    const toArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+                    const mons = toArray(machine.Monitor?.Monitors);
+                    const screens = toArray(machine.Monitor?.WinFormsScreens);
+
+                    const primaryScreen = screens.find(s => s?.Primary) || null;
+                    const otherScreens = screens.filter(s => !s?.Primary);
+                    let otherIdx = 0;
+
+                    // Se não houver EDID/monitores, mas houver telas WinForms, exibe ao menos as telas detectadas
+                    if (mons.length === 0 && screens.length > 0) {
+                      return screens.map(s => {
+                        const res = (s?.WidthPx && s?.HeightPx) ? `${s.WidthPx}x${s.HeightPx}` : (s?.Resolution || 'N/A');
+                        return `
+                          <div style="margin-left: 20px; margin-bottom: 10px;">
+                            <p><strong>Tela:</strong> ${s?.DeviceName || 'N/A'} ${s?.Primary ? '(Primária)' : ''}</p>
+                            <p><strong>Resolução:</strong> ${res}</p>
+                            <br/>
+                          </div>
+                        `;
+                      }).join('');
+                    }
+
+                    if (mons.length === 0) return '<p>N/A</p>';
+
+                    return mons.map(mon => {
+                      const screen = mon?.Primary ? primaryScreen : (otherScreens[otherIdx++] || null);
+
+                      const res =
+                        mon?.Resolution ||
+                        ((mon?.WidthPx && mon?.HeightPx) ? `${mon.WidthPx}x${mon.HeightPx}` : null) ||
+                        ((screen?.WidthPx && screen?.HeightPx) ? `${screen.WidthPx}x${screen.HeightPx}` : null) ||
+                        machine.GPU?.Resolution ||
+                        'N/A';
+
+                      const curHzVal = mon?.CurrentHz ?? screen?.CurrentHz ?? null;
+                      const maxHzVal = mon?.MaxHz ?? screen?.MaxHz ?? null;
+
+                      const curHz = (curHzVal !== null && curHzVal !== undefined && curHzVal !== '') ? `${curHzVal} Hz` : (machine.GPU?.RefreshRate || 'N/A');
+                      const maxHz = (maxHzVal !== null && maxHzVal !== undefined && maxHzVal !== '') ? `${maxHzVal} Hz` : (machine.GPU?.MaxRefreshRate || 'N/A');
+
+                      const deviceName = screen?.DeviceName || mon?.DisplayName || mon?.DeviceName || null;
+                      const deviceLabel = deviceName ? ` (${deviceName})` : '';
+
+                      const manuf = mon?.Manufacturer || 'N/A';
+                      const model = mon?.Model || 'N/A';
+                      const input = mon?.Input || 'N/A';
+
+                      const year = mon?.Year || 'N/A';
+                      const week = mon?.Week || null;
+
+                      const size = mon?.SizeInches ? `${mon.SizeInches}″` : 'N/A';
+                      const sizeCm = (mon?.WidthCm && mon?.HeightCm) ? ` (${mon.WidthCm}×${mon.HeightCm} cm)` : '';
+
+                      return `
                         <div style="margin-left: 20px; margin-bottom: 10px;">
-                          <p><strong>Nome:</strong> ${mon.Name || mon.Model || mon.Manufacturer || 'N/A'} ${mon.Primary ? '(Primário)' : ''}</p>
-                          <p><strong>S/N:</strong> ${mon.Serial || 'N/A'}</p>
-                          <p><strong>Tamanho:</strong> ${mon.SizeInches ? mon.SizeInches + '″' : 'N/A'}${mon.WidthCm ? ` (${mon.WidthCm}×${mon.HeightCm || 'N/A'} cm)` : ''}</p>
-                          <p><strong>Resolução:</strong> ${
-                            mon?.Resolution
-                              ? mon.Resolution
-                              : (mon?.WidthPx && mon?.HeightPx)
-                                ? `${mon.WidthPx}x${mon.HeightPx}`
-                                : (machine.GPU?.Resolution || 'N/A')
-                          }</p>
-                          <p><strong>Taxa de Atualização Atual:</strong> ${
-                            mon?.CurrentHz
-                              ? mon.CurrentHz + ' Hz'
-                              : (machine.GPU?.RefreshRate || 'N/A')
-                          }</p>
-                          <p><strong>Taxa de Atualização Máxima Suportada:</strong> ${
-                            mon?.MaxHz
-                              ? mon.MaxHz + ' Hz'
-                              : (machine.GPU?.MaxRefreshRate || 'N/A')
-                          }</p>
+                          <p><strong>Nome:</strong> ${mon?.Name || 'N/A'} ${mon?.Primary ? '(Primário)' : ''}</p>
+                          <p><strong>Fabricante/Modelo:</strong> ${manuf}${model !== 'N/A' ? ` | ${model}` : ''}</p>
+                          <p><strong>S/N:</strong> ${mon?.Serial || 'N/A'}</p>
+                          <p><strong>Tamanho:</strong> ${size}${sizeCm}</p>
+                          <p><strong>Resolução:</strong> ${res}${deviceLabel}</p>
+                          <p><strong>Taxa de Atualização Atual:</strong> ${curHz}</p>
+                          <p><strong>Taxa de Atualização Máxima Suportada:</strong> ${maxHz}</p>
                           <br/>
                         </div>
-                      `).join('') : '<p>N/A</p>'}
-                 </div>
+                      `;
+                    }).join('');
+                  })()}
+                </div>
 
                  <div class="detail-section">
                    <h4><i class="fas fa-thermometer-half"></i> Temperaturas</h4>
