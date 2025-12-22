@@ -60,8 +60,68 @@ let resourcesChart = null;
 let statusChart = null;
 let alertsChart = null;
 
+/**
+ * Executa um mapeamento assíncrono com limite de concorrência (pool).
+ * Mantém a ordem dos resultados igual à ordem de entrada.
+ */
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+
+      // mapper deve tratar erros internamente e retornar fallback
+      results[i] = await mapper(items[i], i);
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+/**
+ * Normaliza o payload de uma máquina para sempre retornar um array de objetos de máquina.
+ */
+function normalizeMachinePayload(machineData) {
+  if (Array.isArray(machineData)) {
+    return machineData.filter(m => m?.Hostname);
+  }
+  return machineData ? [machineData] : [];
+}
+
 // Função para carregar dados das máquinas
 async function loadMachinesData() {
+  // Helpers locais (auto-contidos, não exigem outras alterações no arquivo)
+  async function mapWithConcurrency(items, limit, mapper) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= items.length) return;
+        results[i] = await mapper(items[i], i);
+      }
+    };
+
+    const workerCount = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  }
+
+  function normalizeMachinePayload(machineData) {
+    if (Array.isArray(machineData)) {
+      return machineData.filter(m => m?.Hostname);
+    }
+    if (machineData && machineData?.Hostname) return [machineData];
+    // Se vier objeto sem Hostname ou null/undefined, ignora para evitar poluir allMachines
+    return [];
+  }
+
   try {
     allMachines = [];
     showLoading('machines-container', 'Carregando dados das máquinas...');
@@ -75,7 +135,6 @@ async function loadMachinesData() {
           if (!manifestResponse.ok) {
             throw new Error(`Erro HTTP ${manifestResponse.status}: ${manifestResponse.statusText}`);
           }
-
           manifest = await manifestResponse.json();
         } catch (error) {
           console.error('Erro ao carregar manifesto oficial:', error);
@@ -87,7 +146,6 @@ async function loadMachinesData() {
           if (!manifestResponse.ok) {
             throw new Error(`Erro HTTP ${manifestResponse.status}: ${manifestResponse.statusText}`);
           }
-
           manifest = await manifestResponse.json();
         } catch (error) {
           console.error('Erro ao carregar manifesto alternativo:', error);
@@ -99,30 +157,56 @@ async function loadMachinesData() {
       return;
     }
 
-    // Carregar dados de cada máquina
-    for (const entry of manifest) {
-      try {
-        const machineResponse = await fetch(bust(entry.Json), NO_CACHE_INIT);
-        if (!machineResponse.ok) {
-          console.error(`Erro ao carregar ${entry.Json}: ${machineResponse.status}`);
-          continue;
-        }
-
-        const machineData = await machineResponse.json();
-        if (Array.isArray(machineData)) {
-          machineData.forEach(m => {
-            if (m?.Hostname) allMachines.push(m)
-          });
-        } else {
-          allMachines.push(machineData);
-        }
-      } catch (error) {
-        console.error(`Erro ao processar máquina ${entry.Hostname}:`, error);
-      }
+    // Validação mínima do manifesto
+    if (!Array.isArray(manifest) || manifest.length === 0) {
+      showEmptyState(
+        'machines-container',
+        'Nenhuma máquina encontrada',
+        'Manifesto vazio ou inválido. Execute o script PowerShell para gerar os dados de inventário.'
+      );
+      return;
     }
 
+    // Carregar dados de cada máquina (PARALELIZADO com limite de concorrência)
+    const CONCURRENCY_LIMIT = 8; // ajuste conforme seu ambiente (ex.: 5 a 10)
+
+    const perEntryResults = await mapWithConcurrency(
+      manifest,
+      CONCURRENCY_LIMIT,
+      async (entry, idx) => {
+        try {
+          if (!entry?.Json) {
+            console.error(`Entrada de manifesto inválida (sem Json) no índice ${idx}:`, entry);
+            return [];
+          }
+
+          const machineResponse = await fetch(bust(entry.Json), NO_CACHE_INIT);
+          if (!machineResponse.ok) {
+            console.error(`Erro ao carregar ${entry.Json}: ${machineResponse.status}`);
+            return [];
+          }
+
+          const machineData = await machineResponse.json();
+          return normalizeMachinePayload(machineData);
+
+        } catch (error) {
+          console.error(`Erro ao processar máquina ${entry?.Hostname || entry?.Json || idx}:`, error);
+          return [];
+        }
+      }
+    );
+
+    // Preserva ordem do manifesto ao popular allMachines
+    perEntryResults.forEach(list => {
+      list.forEach(m => allMachines.push(m));
+    });
+
     if (allMachines.length === 0) {
-      showEmptyState('machines-container', 'Nenhuma máquina encontrada', 'Execute o script PowerShell para gerar os dados de inventário.');
+      showEmptyState(
+        'machines-container',
+        'Nenhuma máquina encontrada',
+        'Execute o script PowerShell para gerar os dados de inventário.'
+      );
       return;
     }
 
@@ -144,7 +228,7 @@ async function loadMachinesData() {
 
   } catch (error) {
     console.error('Erro ao carregar dados:', error);
-    showError('machines-container', error);
+    showError('machines-container', String(error?.message || error));
   }
 }
 

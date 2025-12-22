@@ -142,7 +142,7 @@ $computer = $env:COMPUTERNAME
 # Forçar execução completa (opções desativadas)
 $ModoColeta = "Completo"
 
-$scriptVersion = "2.4"
+$scriptVersion = "2.5"
 
 # Caminho da pasta do script (inclui UNC) e da DLL do LibreHardwareMonitor
 try {
