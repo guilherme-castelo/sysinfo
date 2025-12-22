@@ -168,7 +168,7 @@ async function loadMachinesData() {
     }
 
     // Carregar dados de cada máquina (PARALELIZADO com limite de concorrência)
-    const CONCURRENCY_LIMIT = 8; // ajuste conforme seu ambiente (ex.: 5 a 10)
+    const CONCURRENCY_LIMIT = 10; // ajuste conforme seu ambiente (ex.: 5 a 10)
 
     const perEntryResults = await mapWithConcurrency(
       manifest,
